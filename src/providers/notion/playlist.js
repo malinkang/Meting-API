@@ -1,41 +1,56 @@
 import { request } from './util.js'
 import { map_song_list } from "./util.js"
 
-export const get_playlist = async (id, cookie = '') => {
-    const data = {
-        id,
-        n: 100000,
-        s: 8,
+import { Client } from "@notionhq/client"
+
+export const get_playlist = async (id) => {
+    const notion = new Client({ auth: process.env.NOTION_TOKEN })
+    let res = []
+    let has_more = true
+    let start_cursor = undefined
+
+    try {
+        while (has_more) {
+            const queryRes = await notion.databases.query({
+                database_id: id,
+                start_cursor: start_cursor,
+                page_size: 100,
+            })
+
+            for (const page of queryRes.results) {
+                const properties = page.properties
+                // 处理歌手relation
+                const relation = properties?.歌手?.relation || [];
+                let author = '';
+                if (relation.length > 0) {
+                    const authorNames = [];
+                    for (const rel of relation) {
+                        try {
+                            const artistPage = await notion.pages.retrieve({ page_id: rel.id });
+                            const artistName = artistPage.properties?.标题?.title?.[0]?.plain_text || '';
+                            if (artistName) authorNames.push(artistName);
+                        } catch (e) {
+                            console.error(`获取歌手页面失败: ${rel.id}`, e);
+                        }
+                    }
+                    author = authorNames.join('&');
+                }
+                res.push({
+                    title: properties?.歌曲?.title?.[0]?.plain_text || '',
+                    url: properties?.音频?.files?.[0]?.file?.url || '',
+                    lrc: properties?.歌词?.files?.[0]?.file?.url || '',
+                    pic: page.cover?.external?.url || page.cover?.file?.url || '',
+                    author: author
+                })
+            }
+
+            has_more = queryRes.has_more
+            start_cursor = queryRes.next_cursor
+        }
+    } catch (e) {
+        console.error(e)
     }
-    //不放在data里面避免请求带上无用的数据
-    let limit = 200 || Infinity
-    let offset = 0 || 0
-
-    let res = await request('POST', `https://music.163.com/api/v6/playlist/detail`, data, { crypto: 'api', })
-
-    let trackIds = res.playlist.trackIds
-
-    let idsData = {
-        c:
-            '[' +
-            trackIds
-                .slice(offset, offset + limit)
-                .map((item) => '{"id":' + item.id + '}')
-                .join(',') +
-            ']',
-    }
-
-    res = await request(
-        'POST',
-        `https://music.163.com/api/v3/song/detail`,
-        idsData,
-        { crypto: 'weapi' }
-    )
-
-    res = map_song_list(res)
-
     return res
-
 }
 
 // const res = await get_playlist(2787254569)
